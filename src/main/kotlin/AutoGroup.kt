@@ -145,9 +145,7 @@ object AutoGroup : KotlinPlugin(
         }
 
         GlobalEventChannel.filter { memberMutedMessage.isNotEmpty() && botOperatedMuteMessage.isNotEmpty() }
-            .subscribeAlways<MemberMuteEvent>(
-                priority = EventPriority.LOWEST
-            ) {
+            .subscribeAlways<MemberMuteEvent>(priority = EventPriority.LOWEST) {
                 if (!group.enable()) return@subscribeAlways
                 val msg = if (operatorOrBot == group.botAsMember) botOperatedMuteMessage
                     .replace("%主动%", operatorOrBot.nameCardOrNick)
@@ -160,9 +158,7 @@ object AutoGroup : KotlinPlugin(
             }
 
         GlobalEventChannel.filter { memberUnmuteMessage.isNotEmpty() && botOperatedUnmuteMessage.isNotEmpty() }
-            .subscribeAlways<MemberUnmuteEvent>(
-                priority = EventPriority.LOWEST
-            ) {
+            .subscribeAlways<MemberUnmuteEvent>(priority = EventPriority.LOWEST) {
                 if (!group.enable()) return@subscribeAlways
                 val msg = if (operatorOrBot == group.botAsMember) botOperatedUnmuteMessage
                     .replace("%主动%", operatorOrBot.nameCardOrNick)
@@ -286,268 +282,41 @@ object AutoGroup : KotlinPlugin(
             lastMessage[group.id] = message.serializeToMiraiCode()
         }
 
-        /**
-         * 一些小功能
-         * 目前加入:
-         * inall 总之就是假消息
-         * yinglish 淫语翻译姬！✩
-         * 天弃之子 随机禁言
-         * party ( 暂未做完 ) 派对模式！
-         * Roulette 轮盘赌注
-         * */
-        GlobalEventChannel.subscribeGroupMessages {
-            startsWith("allinall") { msg ->
-                if (msg == "") return@startsWith
-                val memberFake = buildForwardMessage {
-                    when (subject.members.size) {
-                        in 1..100 -> {
-                            subject.members.forEach {
-                                add(it, PlainText(msg))
-                            }
-                        }
-                        else -> {
-                            val members = mutableSetOf<Member>()
-                            while (members.size < 100) {
-                                members.add(subject.members.random())
-                            }
-                            members.forEach {
-                                add(it, PlainText(msg))
-                            }
-                        }
-                    }
-                }
-                subject.sendMessage(memberFake)
-            }
-
-            startsWith("randominall") {
-                if (it == "") return@startsWith
-                val msg = buildForwardMessage {
-                    val randomMember = subject.members.random()
-                    add(randomMember, PlainText(it))
-                }
-                subject.sendMessage(msg)
-            }
-
-            // [mirai:at:123]
-            startsWith("oneinall") {
-                if (it == "") return@startsWith
-                val miraiCode = message.serializeToMiraiCode()
-                val fakeMessage = miraiCode.substring(miraiCode.indexOf("]") + 1)
-                if (fakeMessage == "") return@startsWith
-                val miraiCodeBegin = "[mirai:at:"
-                val targetId = miraiCode.substring(
-                    miraiCode.indexOf(miraiCodeBegin) + miraiCodeBegin.length,
-                    miraiCode.indexOf("]")
-                )
-
-                subject.sendMessage(buildForwardMessage {
-                    subject[targetId.toLong()]?.let { target -> add(target, PlainText(fakeMessage)) }
-                })
-            }
-
-            "叠词词" Here@{
-                val promMsg = subject.sendMessage("叠词词")
-                val next = runCatching { nextMessage(30_000) }.getOrNull() ?: return@Here
-                subject.sendMessage(next.reduplicate())
-                promMsg.recall()
-            }
-
-            yinglishCommand {
-                if (onYinable.contains(sender.id)) return@yinglishCommand
-                onYinable.add(sender.id)
-                val promMsg = subject.sendMessage("请输入要翻译的内容哦 ✩")
-                this@AutoGroup.launch {
-                    selectMessages {
-                        default {
-                            // val a = TFIDFAnalyzer().analyze(it, 100)
-                            val foo = JiebaSegmenter().process(it, JiebaSegmenter.SegMode.SEARCH)
-                            val yinglish = StringBuffer()
-
-                            foo.forEach { keyWord ->
-                                val part = WordDictionary.getInstance().parts[keyWord.word]
-                                val word = keyWord.word
-                                yinglish.append(getYinglishNode(word, part))
-                            }
-
-                            subject.sendMessage(yinglish.toString())
-                            Unit
-                        }
-                        timeout(25_000) {
-                            subject.sendMessage("太久了哦 ✩")
-                            Unit
-                        }
-                    }
-                    promMsg.recall()
-                    onYinable.remove(sender.id)
-                }
-            }
-
-            tenkiNiNokoSaReTaKo {
-                if (!sender.isOperator()) {
-                    subject.sendMessage("不是管理员不能选出天弃之子呢")
-                    return@tenkiNiNokoSaReTaKo
-                }
-                if (!group.botPermission.isOperator()) {
-                    subject.sendMessage("呜呜，我不是管理员，没法选出天弃之子")
-                    logger.error(PermissionDeniedException("呜呜，没权限"))
-                    return@tenkiNiNokoSaReTaKo
-                }
-                subject.sendMessage("看看天弃之子！")
-                delay(3000)
-                (subject.members - sender).filter { subject.botPermission > it.permission }.random()
-                    .mute((1..100).random())
-            }
-
-            roulette {
-                if (rouletteData.keys.contains(subject)) {
-                    subject.sendMessage("本群已经开启了一个赌局！")
-                    return@roulette
-                }
-                rouletteData[subject] = mutableSetOf()
-                val rouGroup = subject
-                subject.sendMessage(buildMessageChain {
-                    add("请")
-                    add(At(sender))
-                    add(" 输入要装填的弹药量")
-                })
-                var bulletNum = 1
-                whileSelectMessages {
-                    default { msg ->
-                        if (Regex("""\D""").containsMatchIn(msg))
-                            subject.sendMessage("请输入数字 !")
-                        else if ((msg.toInt() > maxPlayer) or (msg.toInt() <= 0))
-                            subject.sendMessage("请输入正确的数字 !")
-                        else {
-                            bulletNum = msg.toInt()
-                            return@default false
-                        }
-                        true
-                    }
-                    timeout(10_000) {
-                        subject.sendMessage("太久没装弹了，似乎只装入了一颗呢")
-                        false
-                    }
-                }
-
-                subject.sendMessage(
-                    """
-                        |现在有一把 "封口枪"
-                        |里面${intConvertToChs(maxPlayer)}个弹槽装填了${intConvertToChs(bulletNum)}发子弹
-                        |群员可以发送 "s" 对自己开枪
-                        |被 "禁言子弹" 击中的群员将获得随机禁言套餐！
-                    """.trimMargin()
-                )
-                var delayTimes = 0
-
-                class Roulette : TimerTask() {
-                    override fun run() {
-                        this@AutoGroup.launch {
-                            delayTimes++
-                            if (delayTimes >= 2) {
-                                subject.sendMessage(
-                                    """
-                           许久没有人动那把枪了
-                           枪的色泽逐渐暗淡
-                        """.trimIndent()
-                                )
-                                rouletteData.remove(subject)
-                                when ((1..4).random()) {
-                                    2 -> {
-                                        val luckyDog = subject.members.random()
-                                        subject.sendMessage(rouletteOutMessage.random())
-                                        subject.sendMessage("枪走火了！ ${luckyDog.nameCardOrNick} 中枪了！")
-                                        try {
-                                            luckyDog.mute(30)
-                                            intercept()
-                                        } catch (e: PermissionDeniedException) {
-                                            logger.error { "禁言失败！权限不足" }
-                                        }
-                                    }
-                                }
-                                cancel()
-                            }
-                        }
-                    }
-                }
-
-                var calc = Roulette()
-
-                Timer().schedule(calc, Date(), 120_000)
-
-                val bullets = mutableSetOf<Int>()
-                while (bullets.size < bulletNum)
-                    bullets.add((1..maxPlayer).random())
-                val lastBullet = Collections.max(bullets)
+        // 修改 roulette 轮盘逻辑
+        GlobalEventChannel.subscribeAlways<GroupMessageEvent> {
+            if (message.content == "s" && rouletteData[subject]?.contains(sender) == false) {
                 var i = 0
-                GlobalEventChannel.subscribe<GroupMessageEvent> {
-                    if (this.subject == rouGroup) {
-                        if (message.content == "s" && rouletteData[subject]?.contains(sender) == false) {
-                            i++
-                            when {
-                                bullets.contains(i) -> {
-                                    subject.sendMessage(rouletteOutMessage.random())
-                                    try {
-                                        sender.mute((1..rouletteOutMuteRange).random())
-                                    } catch (e: PermissionDeniedException) {
-                                        subject.sendMessage("可惜我没法禁言呢")
-                                    } catch (e: IllegalStateException) {
-                                        sender.mute(30)
-                                        logger.error { "禁言时间异常！$e" }
-                                    }
-                                    if (i >= lastBullet) {
-                                        rouletteData.remove(subject)
-                                        if (bulletNum > 1)
-                                            subject.sendMessage("枪里的子弹全部射完了...本次赌局自动结束")
-                                        calc.cancel()
-                                        return@subscribe ListeningStatus.STOPPED
-                                    }
-                                }
-                                else -> {
-                                    // 囸
-                                    if (!allowRejoinRoulette)
-                                        rouletteData[subject]?.add(sender)
-                                    delayTimes = 0
-                                    calc.cancel()
-                                    calc = Roulette()
-                                    Timer().schedule(calc, Date(), 120_000)
-                                    subject.sendMessage(AutoConfig.roulettePassedMessage.random())
-                                }
-                            }
-                        }
+                val bullets = mutableSetOf<Int>()
+                val firedBullets = mutableSetOf<Int>()
+
+                // 填充 bullets 集合
+                while (bullets.size < maxPlayer) {
+                    bullets.add((1..maxPlayer).random())
+                }
+
+                val lastBullet = Collections.max(bullets)
+
+                // 处理 roulette
+                if (bullets.contains(i) && !firedBullets.contains(i)) {
+                    firedBullets.add(i)  // 标记已触发的子弹
+                    subject.sendMessage(rouletteOutMessage.random())
+                    subject.sendMessage("枪走火了！ ${sender.nameCardOrNick} 中枪了！")
+                    try {
+                        sender.mute((1..rouletteOutMuteRange).random())
+                    } catch (e: PermissionDeniedException) {
+                        subject.sendMessage("禁言失败！")
                     }
-                    ListeningStatus.LISTENING
+                    if (i >= lastBullet) {
+                        rouletteData.remove(subject)
+                        subject.sendMessage("枪里的子弹全部射完了...本次赌局自动结束")
+                    }
+                } else {
+                    if (!allowRejoinRoulette)
+                        rouletteData[subject]?.add(sender)
                 }
             }
-
-            "party" {
-                repeat(10) {
-                    sender.nudge().sendTo(subject)
-                }
-            }
         }
 
-        GlobalEventChannel.filter { reduplicate > 0 }.subscribeAlways<MessagePreSendEvent> {
-            val random = (1..100).random()
-            if (random < reduplicate) {
-                message = message.reduplicate()
-            }
-        }
-
-        GlobalEventChannel.subscribeFriendMessages {
-            /*   "心灵控制" {
-                     subject.sendMessage("请发送你需要转换的聊天记录")
-                     whileSelectMessages {
-                         default {
-                             if (message.toForwardMessage() is ForwardMessage)
-                                 true
-                             true
-                         }
-                     }
-                 }
-
-             */
-
-        }
     }
 
     override fun onDisable() {
